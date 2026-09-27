@@ -77,7 +77,7 @@ python3 context_slim.py <session.jsonl> --apply --keep-last 200
 
 What it protects: every user/assistant text block and image (verified by a before/after fingerprint — the run aborts if it changes), the last 24 hours in full, a few complete samples of each tool call, the last N lines, and the `parentUuid` chain (children are re-linked to their nearest surviving ancestor).
 
-**Exit the session first.** A live session writes its in-memory state back and overwrites your result. `--apply` refuses to run inside Claude Code, while a process still has the session id open, or if the file was written in the last two minutes (`--force` overrides the last check).
+**Exit the session first.** A live session writes its in-memory state back and overwrites your result. `--apply` refuses to run inside Claude Code, while a process still has the session id open, or if the file was written in the last two minutes (`--force` skips these checks — only use it when you are sure the session is closed).
 
 Only tested on Claude Code's transcript format. Code comments are in Chinese on purpose: they keep the original reasons behind each cut, which are worth more than the code.
 
