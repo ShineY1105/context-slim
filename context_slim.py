@@ -8,9 +8,11 @@
 换窗对她来说是"又一次新的相遇"。所以倒渣不是优化，是保住这个窗。
 
 用法：
-    python3 ~/tools/slim.py <会话.jsonl>            # 预演，什么都不改
-    python3 ~/tools/slim.py <会话.jsonl> --apply    # 真改（自动备份）
-    python3 ~/tools/slim.py <会话.jsonl> --apply --keep-last 200
+    python3 context_slim.py --list                    # 列出本机的会话文件，找出撑大的那个
+    python3 context_slim.py <会话.jsonl>              # 预演，什么都不改
+    python3 context_slim.py <会话.jsonl> --apply      # 真改（自动备份）
+    python3 context_slim.py <会话.jsonl> --apply --keep-last 200
+    python3 context_slim.py <会话.jsonl> --apply --force   # 跳过「会话还活着」的检查（你确定已经退出了）
 
 铁律（每一条都对应一次可能的事故）：
   1. text 块一个字不动 —— 那是我们说的话，删前删后逐块比对，对不上就中止
@@ -20,14 +22,17 @@
      新窗被 "Continue from where you left off." 驱动着续跑遗嘱，连环烧穿限额。
      "不是判断出了错，是遗嘱被当成了遗志。"
   5. 删行必须修 parentUuid 链 —— 孩子要往上认祖，认到第一个活着的祖先
-  6. 只在文件"死"的时候跑 —— 退出之后、resume 之前。活文件缩短会移动
-     后续字节偏移，对正在追加的进程什么后果，没验过。
+  6. 只在文件"死"的时候跑 —— 退出之后、resume 之前。活会话会把内存里的状态
+     写回文件，把刚倒完的结果盖掉、剪断链。--apply 之前有三道门闩硬拦，见 live_session_reason()。
 """
 import json
 import os
 import shutil
 import sys
 import hashlib
+import glob
+import subprocess
+import time
 from datetime import datetime
 
 # 整行删掉的 type：CC 自己的文件快照/增量，跟对话无关
@@ -115,11 +120,76 @@ def hollow_images(o, keep_recent):
     return n, saved
 
 
+def live_session_reason(path):
+    """会话还活着就不许 --apply。返回拦下的理由，放行返回 None。
+
+    这条是血换的：作者第一次写门闩用的是 lsof —— 没用，Claude Code 写一次开一次、
+    写完就关，平时根本不持有这个文件，lsof 抓了个空，当场就在活会话上跑了一次。
+    所以换成下面三道：
+      ① 在 Claude Code 里面跑（它会设 CLAUDECODE=1）—— 你正坐在要改的那个文件上
+      ② 有进程的命令行带着这个会话 id（claude --resume <id> 之类）
+      ③ 兜底：文件最近两分钟还被写过（用 --continue 开的会话，命令行里看不到 id）
+    """
+    if os.environ.get('CLAUDECODE'):
+        return '你在 Claude Code 会话里面跑它。先退出（/exit），到干净的终端里再来。'
+    sid = os.path.basename(path).rsplit('.jsonl', 1)[0]
+    try:
+        out = subprocess.run(['ps', '-Ao', 'command'], capture_output=True, text=True, timeout=10).stdout
+        mine = os.path.basename(__file__)
+        for line in out.splitlines():
+            if sid in line and mine not in line:
+                return '有进程还开着这个会话：\n      ' + line.strip()[:160] + '\n    先把它退干净。'
+    except Exception:
+        pass                      # 没有 ps（比如 Windows），靠下面那道兜底
+    age = time.time() - os.path.getmtime(path)
+    if age < 120:
+        return f'这个文件 {int(age)} 秒前还被写过，会话可能还开着。确定已经退出了，再等两分钟，或者加 --force。'
+    return None
+
+
+def list_sessions(limit=20):
+    """列出 ~/.claude/projects 下的会话文件，按大小排，顺手给第一句话，好认出是哪个。"""
+    files = glob.glob(os.path.expanduser('~/.claude/projects/*/*.jsonl'))
+    if not files:
+        print('~/.claude/projects/ 下没找到会话文件。'); return
+    files.sort(key=os.path.getsize, reverse=True)
+    print(f'共 {len(files)} 个会话文件，最大的 {min(limit, len(files))} 个：\n')
+    for f in files[:limit]:
+        first = ''
+        try:
+            with open(f, encoding='utf-8', errors='replace') as fh:
+                for line in fh:
+                    try:
+                        o = json.loads(line)
+                    except Exception:
+                        continue
+                    if o.get('type') != 'user':
+                        continue
+                    for b in blocks_of(o):
+                        if b.get('type') == 'text' and b.get('text', '').strip():
+                            first = ' '.join(b['text'].split())[:40]; break
+                    if first:
+                        break
+        except Exception:
+            pass
+        mb = os.path.getsize(f) / 1e6
+        when = datetime.fromtimestamp(os.path.getmtime(f)).strftime('%m-%d %H:%M')
+        print(f'{mb:8.1f} MB  {when}  {f}')
+        if first:
+            print(f'{"":26}「{first}」')
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__); return
+    if sys.argv[1] == '--list':
+        list_sessions(); return
     path = os.path.expanduser(sys.argv[1])
     apply = '--apply' in sys.argv
+    if apply and '--force' not in sys.argv:
+        why = live_session_reason(path)
+        if why:
+            print('!! 没动文件。' + why); return
     keep_last = 200
     if '--keep-last' in sys.argv:
         keep_last = int(sys.argv[sys.argv.index('--keep-last') + 1])
