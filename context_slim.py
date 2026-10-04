@@ -179,6 +179,24 @@ def list_sessions(limit=20):
             print(f'{"":26}「{first}」')
 
 
+# ── 孤兒代理（lone surrogate）──────────────────────────────────────
+#
+# 為什麼要有這個（2026-10-04，WC 那邊實際踩到）：
+#     `json.dumps(o, ensure_ascii=False)` 遇到**不完整的代理對**時，
+#     會吐出一個**含孤兒字符的字符串**（不是 escape 形式）——
+#     而那個字符串**編碼不了 UTF-8** ⇒ 寫回時炸掉：
+#       UnicodeEncodeError: ... character '\ud83e' ... surrogates not allowed
+#     ⇒ 結果是「算完了、備份好了、寫回時才炸」，**檔案沒動**。
+#     而孤兒本身是壞字元（一個被切斷的 emoji 的半截）——
+#     換成 U+FFFD 不會動到任何對話內容，只是把它從「炸彈」變成「看得見的替換符」。
+_SURROGATE_MAP = {i: '�' for i in range(0xD800, 0xE000)}
+
+
+def scrub_surrogates(text):
+    """把孤兒代理換成 U+FFFD。沒有孤兒時是無損的 O(n) 經過。"""
+    return text.translate(_SURROGATE_MAP)
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__); return
@@ -417,6 +435,16 @@ def main():
     bak = os.path.join(bdir, f'{os.path.basename(path)}.{stamp}.bak')
     shutil.copy2(path, bak)
     print(f'\n备份 -> {bak}')
+
+    # ⚠️ 寫回前先把孤兒代理清掉（不然 encode 會炸，見上面 `scrub_surrogates` 那段）。
+    n_sur = 0
+    for i, line in enumerate(kept):
+        fixed = scrub_surrogates(line)
+        if fixed != line:
+            kept[i] = fixed
+            n_sur += 1
+    if n_sur:
+        print(f'⚠️ {n_sur} 行含孤兒代理（被切斷的 emoji 半截）—— 已換成 U+FFFD（不動對話內容）')
 
     tmp = path + '.slim.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
